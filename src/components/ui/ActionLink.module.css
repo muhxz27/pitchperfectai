@@ -1,0 +1,86 @@
+.action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.625rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast),
+    transform var(--transition-fast);
+}
+
+.action:focus-visible {
+  outline-offset: 3px;
+}
+
+.md {
+  min-height: 2.75rem;
+  padding: 0 1.125rem;
+}
+
+.lg {
+  min-height: 3.25rem;
+  padding: 0 1.375rem;
+  font-size: 1rem;
+}
+
+.primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-surface);
+}
+
+.primary:hover {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+
+.primary:active {
+  background: var(--color-accent-pressed);
+  border-color: var(--color-accent-pressed);
+}
+
+.secondary {
+  background: var(--color-surface);
+  border-color: var(--color-border-strong);
+  color: var(--color-ink);
+}
+
+.secondary:hover {
+  background: var(--color-surface-subtle);
+  border-color: var(--color-ink);
+}
+
+.inverse {
+  background: var(--color-surface);
+  border-color: var(--color-surface);
+  color: var(--color-ink);
+}
+
+.inverse:hover {
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent-soft);
+}
+
+.icon {
+  transition: transform var(--transition-fast);
+}
+
+.action:hover .icon {
+  transform: translateX(2px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .action:hover .icon {
+    transform: none;
+  }
+}
