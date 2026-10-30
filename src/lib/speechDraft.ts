@@ -1,4 +1,7 @@
 export const MIN_SPEECH_WORDS = 50;
+export const MAX_SPEECH_WORDS = 5_000;
+export const MAX_SPEECH_CHARS = 20_000;
+export const MAX_TITLE_CHARS = 160;
 
 export const AUDIENCE_OPTIONS = [
   { value: 'general', label: 'General audience' },

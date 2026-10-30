@@ -1473,3 +1473,126 @@
     font-size: 0.6563rem;
   }
 }
+
+/* Live AI states */
+
+.liveBadge {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.4rem 0.7rem;
+  border: 1px solid #cdeadd;
+  border-radius: var(--radius-pill);
+  background: var(--color-success-soft);
+  color: var(--color-success);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.45;
+}
+
+.errorIcon {
+  border-color: #f3d0ce;
+  background: var(--color-error-soft);
+  color: var(--color-error);
+}
+
+.errorRetry {
+  display: inline-flex;
+  min-height: 2.85rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0 1.1rem;
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  background: var(--color-accent);
+  box-shadow: 0 8px 20px -14px rgb(91 61 245 / 60%);
+  color: var(--color-surface);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: 1.1;
+  white-space: nowrap;
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.errorRetry:hover {
+  border-color: var(--color-accent-hover);
+  background: var(--color-accent-hover);
+}
+
+.fallbackButton {
+  display: inline-flex;
+  min-height: 2.85rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0 1.1rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: 1.1;
+  white-space: nowrap;
+  transition:
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.fallbackButton:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent-hover);
+}
+
+.fallbackBanner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem 1.5rem;
+  padding: clamp(1.1rem, 2.4vw, 1.5rem);
+  border: 1px solid var(--developing-border);
+  border-radius: var(--radius-lg);
+  background: var(--developing-soft);
+}
+
+.fallbackLead {
+  min-width: 0;
+  max-width: 64ch;
+}
+
+.fallbackTitle {
+  margin-top: 0.65rem;
+  color: var(--developing-ink);
+  font-size: 1.0625rem;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  line-height: 1.3;
+}
+
+.fallbackText {
+  margin-top: 0.35rem;
+  color: var(--color-ink);
+  font-size: var(--text-sm);
+  line-height: 1.65;
+}
+
+@media (max-width: 560px) {
+  .fallbackBanner {
+    flex-direction: column;
+  }
+
+  .fallbackBanner .errorRetry {
+    width: 100%;
+  }
+
+  .errorRetry,
+  .fallbackButton {
+    width: 100%;
+  }
+}

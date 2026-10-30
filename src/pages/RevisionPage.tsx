@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import {
   AlertCircle,
   ArrowRight,
@@ -6,10 +6,19 @@ import {
   Copy,
   FileText,
   FlaskConical,
+  LoaderCircle,
   PenLine,
+  RotateCcw,
+  Sparkles,
 } from 'lucide-react';
 import { ActionLink } from '../components/ui/ActionLink';
 import { WorkflowIntro } from '../components/workspace/WorkflowIntro';
+import {
+  type ApiFailure,
+  type RevisionChangeResult,
+  type SpeechRevisionResult,
+} from '../lib/aiApi';
+import { loadRevision } from '../lib/aiClient';
 import {
   IMPROVED_EXAMPLE_NOTE,
   SAMPLE_REVISION_LABEL,
@@ -20,6 +29,7 @@ import {
   countWords,
   getAudienceLabel,
   getGoalLabel,
+  MIN_SPEECH_WORDS,
   type SpeechDraft,
 } from '../lib/speechDraft';
 import styles from './RevisionPage.module.css';
@@ -28,11 +38,29 @@ interface RevisionPageProps {
   draft: SpeechDraft;
 }
 
+interface RevisionView {
+  improvedSpeech: {
+    title: string;
+    paragraphs: string[];
+  };
+  changes: RevisionChangeResult[];
+}
+
+type RequestState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'ready'; revision: SpeechRevisionResult }
+  | { status: 'error'; failure: ApiFailure };
+
 type CopyStatus = 'idle' | 'copying' | 'success' | 'error' | 'unavailable';
 
-const improvedSpeechText =
-  sampleRevision.improvedSpeech.paragraphs.join('\n\n');
-const improvedWordCount = countWords(improvedSpeechText);
+const sampleRevisionView: RevisionView = {
+  improvedSpeech: {
+    title: sampleRevision.improvedSpeech.title,
+    paragraphs: [...sampleRevision.improvedSpeech.paragraphs],
+  },
+  changes: [...sampleRevision.changes],
+};
 
 function formatIndex(index: number) {
   return String(index + 1).padStart(2, '0');
@@ -48,24 +76,96 @@ export function RevisionPage({ draft }: RevisionPageProps) {
   const nextTitleId = `${id}-next`;
   const copyFeedbackId = `${id}-copy-feedback`;
 
-  const [copyStatus, setCopyStatus] = useState<CopyStatus>('idle');
-
   const wordCount = countWords(draft.speech);
   const wordLabel = wordCount === 1 ? 'word' : 'words';
-  const hasOriginal = draft.speech.trim().length > 0;
+  const meetsMinimum = wordCount >= MIN_SPEECH_WORDS;
   const displayTitle = draft.title.trim() || 'Untitled speech';
+
+  const [requestState, setRequestState] = useState<RequestState>({
+    status: 'idle',
+  });
+  const [reloadKey, setReloadKey] = useState(0);
+  const [showSampleFallback, setShowSampleFallback] = useState(false);
+  const [copyStatus, setCopyStatus] = useState<CopyStatus>('idle');
+
+  useEffect(() => {
+    if (!meetsMinimum) {
+      setRequestState({ status: 'idle' });
+      setShowSampleFallback(false);
+      return;
+    }
+
+    let active = true;
+    setRequestState({ status: 'loading' });
+    setShowSampleFallback(false);
+    setCopyStatus('idle');
+
+    loadRevision(draft, { force: reloadKey > 0 }).then((result) => {
+      if (!active) {
+        return;
+      }
+
+      setRequestState(
+        result.ok
+          ? { status: 'ready', revision: result.value }
+          : { status: 'error', failure: result.failure },
+      );
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [draft, meetsMinimum, reloadKey]);
+
+  const readyRevision =
+    requestState.status === 'ready' ? requestState.revision : null;
+  const failure =
+    requestState.status === 'error' ? requestState.failure : null;
+  const isLive = readyRevision !== null;
+  const isFallback =
+    failure !== null && showSampleFallback && failure.fallbackAllowed;
+
+  const activeRevision: RevisionView | null = readyRevision
+    ? {
+        improvedSpeech: {
+          title: readyRevision.improvedSpeech.title,
+          paragraphs: readyRevision.improvedSpeech.paragraphs,
+        },
+        changes: readyRevision.changes,
+      }
+    : isFallback
+      ? sampleRevisionView
+      : null;
+
+  const improvedText = activeRevision
+    ? activeRevision.improvedSpeech.paragraphs.join('\n\n')
+    : '';
+  const improvedWordCount = countWords(improvedText);
+  const improvedWordLabel = improvedWordCount === 1 ? 'word' : 'words';
   const isCopying = copyStatus === 'copying';
 
   const copyFeedback =
     copyStatus === 'success'
-      ? 'Improved example copied to your clipboard.'
+      ? isLive
+        ? 'Revised speech copied to your clipboard.'
+        : 'Improved example copied to your clipboard.'
       : copyStatus === 'error'
         ? 'That copy didn’t work. Select the text above and copy it manually.'
         : copyStatus === 'unavailable'
           ? 'Clipboard access isn’t available here. Select the text above and copy it manually.'
           : '';
 
+  function retryRevision() {
+    setShowSampleFallback(false);
+    setReloadKey((key) => key + 1);
+  }
+
   async function copyImprovedExample() {
+    if (!improvedText) {
+      setCopyStatus('error');
+      return;
+    }
+
     setCopyStatus('copying');
 
     try {
@@ -76,16 +176,36 @@ export function RevisionPage({ draft }: RevisionPageProps) {
         return;
       }
 
-      await clipboard.writeText(improvedSpeechText);
+      await clipboard.writeText(improvedText);
       setCopyStatus('success');
     } catch {
       setCopyStatus('error');
     }
   }
 
+  const statusMessage = !meetsMinimum
+    ? `No valid draft is loaded. The workspace needs at least ${MIN_SPEECH_WORDS} words.`
+    : requestState.status === 'loading'
+      ? 'Generating an AI revision of your speech.'
+      : requestState.status === 'error'
+        ? showSampleFallback
+          ? 'AI revision is unavailable. Showing fixed sample revision as a fallback.'
+          : `The live revision could not be completed. ${requestState.failure.message}`
+        : 'Live AI revision ready.';
+
+  const introDescription = isLive
+    ? 'Revision gives you room to sharpen clarity, steady the flow, and strengthen your impact. The comparison below was generated by the AI model from your draft.'
+    : isFallback
+      ? 'The AI revision could not be completed, so this page is showing a fixed demonstration. It is not a rewrite of your words.'
+      : 'Revision gives you room to sharpen clarity, steady the flow, and strengthen your impact. Your draft is sent to the server for an AI revision when this page opens.';
+
   return (
     <section className={styles.page} aria-labelledby={pageTitleId}>
       <div className="container">
+        <p className="visually-hidden" role="status" aria-atomic="true">
+          {statusMessage}
+        </p>
+
         <WorkflowIntro
           backHref="#/analysis"
           backLabel="Back to analysis"
@@ -96,23 +216,18 @@ export function RevisionPage({ draft }: RevisionPageProps) {
             </>
           }
           titleId={pageTitleId}
-          description="Revision gives you room to sharpen clarity, steady the flow, and strengthen the impact on your audience. The comparison below is a fixed demonstration, not a live rewrite of your words."
+          description={introDescription}
           currentStep="refine"
         />
 
-        {!hasOriginal ? (
+        {!meetsMinimum ? (
           <div className={styles.emptyPanel}>
             <div className={styles.emptyTop}>
-              <span className={styles.sampleBadge}>
-                <FlaskConical
-                  size={14}
-                  strokeWidth={1.9}
-                  aria-hidden="true"
-                />
-                {SAMPLE_REVISION_LABEL}
-              </span>
+              <span className={styles.stateLabel}>Draft needed</span>
               <span className={styles.fixtureFlag}>
-                No comparison without a draft
+                {wordCount === 0
+                  ? 'No comparison without a draft'
+                  : 'At least 50 words required'}
               </span>
             </div>
 
@@ -123,13 +238,14 @@ export function RevisionPage({ draft }: RevisionPageProps) {
               <div className={styles.emptyBody}>
                 <p className={styles.stateLabel}>Draft needed</p>
                 <h2 className={styles.emptyTitle}>
-                  There’s nothing to revise yet.
+                  {wordCount === 0
+                    ? 'There’s nothing to revise yet.'
+                    : 'Add a little more before revising.'}
                 </h2>
                 <p className={styles.emptyText}>
-                  Write or paste your speech in the workspace, then return to
-                  this step. Your original wording stays intact, and no
-                  comparison is shown until there is a draft to place beside
-                  the example.
+                  {wordCount === 0
+                    ? 'Write or paste your speech in the workspace, then return to this step. Your original wording stays intact, and no comparison is shown until there is a draft to revise.'
+                    : `The live AI revision needs at least ${MIN_SPEECH_WORDS} words so there is enough to work with. Add a little more in the workspace, then return to this step.`}
                 </p>
                 <div className={styles.emptyActions}>
                   <ActionLink to="#/workspace" size="lg">
@@ -140,26 +256,189 @@ export function RevisionPage({ draft }: RevisionPageProps) {
                   </a>
                 </div>
                 <p className={styles.emptyCount}>
-                  Current draft length: {wordCount}{' '}
-                  {wordCount === 1 ? 'word' : 'words'}
+                  Current draft length: {wordCount} {wordLabel}
+                  {wordCount < MIN_SPEECH_WORDS
+                    ? ` of ${MIN_SPEECH_WORDS} words minimum`
+                    : ''}
                 </p>
               </div>
             </div>
           </div>
-        ) : (
+        ) : requestState.status === 'loading' ||
+          requestState.status === 'idle' ? (
+          <div className={styles.loadingPanel} aria-busy="true">
+            <div className={styles.loadingTop}>
+              <span className={styles.liveBadge}>
+                <Sparkles
+                  size={14}
+                  strokeWidth={1.9}
+                  aria-hidden="true"
+                />
+                Live AI revision
+              </span>
+              <span className={styles.loadingStatus}>
+                <LoaderCircle
+                  className={styles.spinner}
+                  size={15}
+                  strokeWidth={2}
+                  aria-hidden="true"
+                />
+                Revising
+              </span>
+            </div>
+
+            <div className={styles.loadingCopy}>
+              <p className={styles.stateLabel}>Step 3 · live AI</p>
+              <h2 className={styles.loadingTitle}>
+                Rewriting with your draft in view.
+              </h2>
+              <p className={styles.loadingText}>
+                The configured AI model is preparing a full revision and a
+                short list of changes. Your original draft stays exactly as
+                you wrote it on the left.
+              </p>
+            </div>
+
+            <div className={styles.loadingBar} aria-hidden="true">
+              <span />
+              <span />
+              <span />
+              <span />
+            </div>
+          </div>
+        ) : failure && !showSampleFallback ? (
+          <div className={styles.emptyPanel}>
+            <div className={styles.emptyTop}>
+              <span className={styles.stateLabel}>Live AI revision</span>
+              <span className={styles.fixtureFlag}>
+                Your draft is unchanged
+              </span>
+            </div>
+
+            <div className={styles.emptyContent}>
+              <span
+                className={`${styles.emptyIcon} ${styles.errorIcon}`}
+                aria-hidden="true"
+              >
+                <AlertCircle size={24} strokeWidth={1.8} />
+              </span>
+              <div className={styles.emptyBody}>
+                <p className={styles.stateLabel}>Revision unavailable</p>
+                <h2 className={styles.emptyTitle}>
+                  {failure.retryable
+                    ? 'The revision didn’t come back.'
+                    : 'Live revision isn’t available right now.'}
+                </h2>
+                <p className={styles.emptyText} role="alert">
+                  {failure.message}
+                </p>
+                <div className={styles.emptyActions}>
+                  {failure.retryable ? (
+                    <button
+                      type="button"
+                      className={styles.errorRetry}
+                      onClick={retryRevision}
+                    >
+                      <RotateCcw
+                        size={15}
+                        strokeWidth={2.2}
+                        aria-hidden="true"
+                      />
+                      Retry revision
+                    </button>
+                  ) : null}
+                  {failure.fallbackAllowed ? (
+                    <button
+                      type="button"
+                      className={styles.fallbackButton}
+                      onClick={() => setShowSampleFallback(true)}
+                    >
+                      <FlaskConical
+                        size={15}
+                        strokeWidth={1.9}
+                        aria-hidden="true"
+                      />
+                      Show sample fallback
+                    </button>
+                  ) : null}
+                  <ActionLink
+                    to="#/workspace"
+                    variant="secondary"
+                    size="lg"
+                  >
+                    Back to workspace
+                  </ActionLink>
+                </div>
+                <p className={styles.emptyCount}>
+                  {failure.fallbackAllowed
+                    ? 'The sample fallback is fixed demonstration content. It is never presented as a real rewrite.'
+                    : 'No sample revision is shown for this error.'}
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : activeRevision ? (
           <div className={styles.revision}>
-            <header className={styles.overview}>
-              <div className={styles.overviewTop}>
-                <span className={styles.sampleBadge}>
-                  <FlaskConical
-                    size={14}
-                    strokeWidth={1.9}
+            {isFallback && failure ? (
+              <div className={styles.fallbackBanner} role="status">
+                <div className={styles.fallbackLead}>
+                  <span className={styles.sampleBadge}>
+                    <FlaskConical
+                      size={14}
+                      strokeWidth={1.9}
+                      aria-hidden="true"
+                    />
+                    {SAMPLE_REVISION_LABEL}
+                  </span>
+                  <p className={styles.fallbackTitle}>
+                    AI unavailable — showing sample data
+                  </p>
+                  <p className={styles.fallbackText}>
+                    {failure.message} The comparison and change notes below
+                    are fixed demonstration content, not a rewrite of your
+                    speech.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className={styles.errorRetry}
+                  onClick={retryRevision}
+                >
+                  <RotateCcw
+                    size={15}
+                    strokeWidth={2.2}
                     aria-hidden="true"
                   />
-                  {SAMPLE_REVISION_LABEL}
-                </span>
+                  Try AI again
+                </button>
+              </div>
+            ) : null}
+
+            <header className={styles.overview}>
+              <div className={styles.overviewTop}>
+                {isLive ? (
+                  <span className={styles.liveBadge}>
+                    <Sparkles
+                      size={14}
+                      strokeWidth={1.9}
+                      aria-hidden="true"
+                    />
+                    Live AI revision
+                  </span>
+                ) : (
+                  <span className={styles.sampleBadge}>
+                    <FlaskConical
+                      size={14}
+                      strokeWidth={1.9}
+                      aria-hidden="true"
+                    />
+                    {SAMPLE_REVISION_LABEL}
+                  </span>
+                )}
                 <span className={styles.fixtureFlag}>
-                  Fixed fixture · no live AI
+                  {isLive
+                    ? 'Generated by AI · your draft unchanged'
+                    : 'Sample fallback · AI unavailable'}
                 </span>
               </div>
 
@@ -208,7 +487,11 @@ export function RevisionPage({ draft }: RevisionPageProps) {
                 </div>
               </div>
 
-              <p className={styles.overviewNote}>{SAMPLE_REVISION_NOTE}</p>
+              <p className={styles.overviewNote}>
+                {isLive
+                  ? 'The improved speech and change notes were generated by the AI model from your draft. AI revisions can shift your meaning, so review every line before you use it.'
+                  : SAMPLE_REVISION_NOTE}
+              </p>
             </header>
 
             <section
@@ -223,9 +506,9 @@ export function RevisionPage({ draft }: RevisionPageProps) {
                   </h2>
                 </div>
                 <p className={styles.sectionLedger}>
-                  Your original is on the left, untouched. The improved
-                  example is fixed sample writing, not a personalised
-                  rewrite.
+                  {isLive
+                    ? 'Your original is on the left, untouched. The right side is the AI revision generated from it.'
+                    : 'Your original is on the left, untouched. The improved example is fixed sample writing, not a personalised rewrite.'}
                 </p>
               </div>
 
@@ -278,21 +561,31 @@ export function RevisionPage({ draft }: RevisionPageProps) {
                   <div className={styles.improvedHeader}>
                     <div className={styles.improvedIntro}>
                       <span className={styles.illustrativeBadge}>
-                        <FlaskConical
-                          size={13}
-                          strokeWidth={1.9}
-                          aria-hidden="true"
-                        />
-                        Illustrative sample
+                        {isLive ? (
+                          <Sparkles
+                            size={13}
+                            strokeWidth={1.9}
+                            aria-hidden="true"
+                          />
+                        ) : (
+                          <FlaskConical
+                            size={13}
+                            strokeWidth={1.9}
+                            aria-hidden="true"
+                          />
+                        )}
+                        {isLive ? 'AI revision' : 'Illustrative sample'}
                       </span>
                       <h3
                         id={improvedTitleId}
                         className={styles.panelTitle}
                       >
-                        Improved example
+                        {isLive ? 'AI revision' : 'Improved example'}
                       </h3>
                       <p className={styles.panelDescription}>
-                        {IMPROVED_EXAMPLE_NOTE}
+                        {isLive
+                          ? 'A full revision generated by the AI model from your draft. Compare it line by line; AI can change your meaning.'
+                          : IMPROVED_EXAMPLE_NOTE}
                       </p>
                     </div>
 
@@ -312,7 +605,11 @@ export function RevisionPage({ draft }: RevisionPageProps) {
                           strokeWidth={2}
                           aria-hidden="true"
                         />
-                        <span>Copy improved example</span>
+                        <span>
+                          {isLive
+                            ? 'Copy revised speech'
+                            : 'Copy improved example'}
+                        </span>
                       </button>
 
                       <p
@@ -349,10 +646,10 @@ export function RevisionPage({ draft }: RevisionPageProps) {
 
                   <div className={styles.improvedBody}>
                     <p className={styles.exampleSpeechTitle}>
-                      {sampleRevision.improvedSpeech.title}
+                      {activeRevision.improvedSpeech.title}
                     </p>
                     <div className={styles.improvedText}>
-                      {sampleRevision.improvedSpeech.paragraphs.map(
+                      {activeRevision.improvedSpeech.paragraphs.map(
                         (paragraph, index) => (
                           <p key={`paragraph-${index}`}>{paragraph}</p>
                         ),
@@ -367,7 +664,9 @@ export function RevisionPage({ draft }: RevisionPageProps) {
                         strokeWidth={1.8}
                         aria-hidden="true"
                       />
-                      Sample content · {improvedWordCount} words
+                      {isLive
+                        ? `AI-generated · ${improvedWordCount} ${improvedWordLabel}`
+                        : `Sample content · ${improvedWordCount} ${improvedWordLabel}`}
                     </span>
                     <span>Your draft is not changed.</span>
                   </footer>
@@ -381,19 +680,28 @@ export function RevisionPage({ draft }: RevisionPageProps) {
             >
               <div className={styles.sectionHeader}>
                 <div>
-                  <p className={styles.eyebrow}>Three illustrative moves</p>
+                  <p className={styles.eyebrow}>
+                    {isLive
+                      ? `${activeRevision.changes.length} key ${
+                          activeRevision.changes.length === 1
+                            ? 'change'
+                            : 'changes'
+                        }`
+                      : 'Three illustrative moves'}
+                  </p>
                   <h2 id={changesTitleId} className={styles.sectionTitle}>
                     What a revision can improve
                   </h2>
                 </div>
                 <p className={styles.sectionLedger}>
-                  Sample before-and-after lines from the demonstration
-                  fixture. They are not edits made to your draft.
+                  {isLive
+                    ? 'Before-and-after lines quoted from your draft and the AI revision.'
+                    : 'Sample before-and-after lines from the demonstration fixture. They are not edits made to your draft.'}
                 </p>
               </div>
 
               <ol className={styles.changeList}>
-                {sampleRevision.changes.map((change, index) => (
+                {activeRevision.changes.map((change, index) => (
                   <li key={change.id} className={styles.changeItem}>
                     <span className={styles.changeIndex} aria-hidden="true">
                       {formatIndex(index)}
@@ -405,7 +713,7 @@ export function RevisionPage({ draft }: RevisionPageProps) {
                           className={`${styles.changeSentence} ${styles.changeBefore}`}
                         >
                           <p className={styles.changeLabel}>
-                            Original example
+                            {isLive ? 'Your original' : 'Original example'}
                           </p>
                           <p className={styles.changeText}>
                             {change.originalExample}
@@ -428,7 +736,7 @@ export function RevisionPage({ draft }: RevisionPageProps) {
                               strokeWidth={2.3}
                               aria-hidden="true"
                             />
-                            Improved example
+                            {isLive ? 'AI revision' : 'Improved example'}
                           </p>
                           <p className={styles.changeText}>
                             {change.improvedExample}
@@ -438,7 +746,9 @@ export function RevisionPage({ draft }: RevisionPageProps) {
 
                       <div className={styles.changeReason}>
                         <p className={styles.reasonLabel}>
-                          Why it may work better
+                          {isLive
+                            ? 'Why this change helps'
+                            : 'Why it may work better'}
                         </p>
                         <p className={styles.reasonText}>
                           {change.explanation}
@@ -460,9 +770,9 @@ export function RevisionPage({ draft }: RevisionPageProps) {
                   Keep your voice. Try one move.
                 </h2>
                 <p className={styles.nextText}>
-                  Your draft is unchanged. Return to the workspace to try one
-                  of these illustrative moves in your own words, then compare
-                  the result by ear.
+                  {isLive
+                    ? 'Your draft is unchanged. Copy the revision, keep the lines that sound like you, and leave the rest. Return to the workspace to compare the result by ear.'
+                    : 'Your draft is unchanged. Return to the workspace to try one of these illustrative moves in your own words, then compare the result by ear.'}
                 </p>
               </div>
               <div className={styles.nextActions}>
@@ -482,7 +792,7 @@ export function RevisionPage({ draft }: RevisionPageProps) {
               </div>
             </section>
           </div>
-        )}
+        ) : null}
       </div>
     </section>
   );

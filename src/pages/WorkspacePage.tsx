@@ -18,6 +18,9 @@ import {
   AUDIENCE_OPTIONS,
   countWords,
   GOAL_OPTIONS,
+  MAX_SPEECH_CHARS,
+  MAX_SPEECH_WORDS,
+  MAX_TITLE_CHARS,
   MIN_SPEECH_WORDS,
   SAMPLE_DRAFT,
   type SpeechDraft,
@@ -54,15 +57,25 @@ export function WorkspacePage({
   const wordCount = countWords(draft.speech);
   const hasSpeech = draft.speech.trim().length > 0;
   const meetsMinimum = wordCount >= MIN_SPEECH_WORDS;
+  const exceedsMaximum =
+    wordCount > MAX_SPEECH_WORDS || draft.speech.length > MAX_SPEECH_CHARS;
   const hasDraftText =
     draft.title.trim().length > 0 || draft.speech.trim().length > 0;
 
   const errorMessage =
-    submitted && !meetsMinimum
-      ? hasSpeech
-        ? 'Your speech is under 50 words. Add a little more before you analyse.'
-        : 'Your speech is empty. Add a draft or try the sample speech.'
-      : null;
+    submitted && exceedsMaximum
+      ? draft.speech.length > MAX_SPEECH_CHARS
+        ? `Your speech is over ${MAX_SPEECH_CHARS.toLocaleString(
+            'en-US',
+          )} characters. Shorten it before you analyse.`
+        : `Your speech is over ${MAX_SPEECH_WORDS.toLocaleString(
+            'en-US',
+          )} words. Shorten it before you analyse.`
+      : submitted && !meetsMinimum
+        ? hasSpeech
+          ? 'Your speech is under 50 words. Add a little more before you analyse.'
+          : 'Your speech is empty. Add a draft or try the sample speech.'
+        : null;
 
   const describedBy = `${wordCountId} ${minimumId}${
     errorMessage ? ` ${errorId}` : ''
@@ -71,7 +84,7 @@ export function WorkspacePage({
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!meetsMinimum) {
+    if (!meetsMinimum || exceedsMaximum) {
       setSubmitted(true);
       window.requestAnimationFrame(() => {
         speechRef.current?.focus();
@@ -201,6 +214,7 @@ export function WorkspacePage({
                 id={titleInputId}
                 className={styles.titleInput}
                 type="text"
+                maxLength={MAX_TITLE_CHARS}
                 value={draft.title}
                 onChange={(event) =>
                   onDraftChange({ title: event.target.value })

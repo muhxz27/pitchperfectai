@@ -7,18 +7,29 @@ import {
   LoaderCircle,
   Mail,
   RotateCcw,
+  Sparkles,
   Target,
 } from 'lucide-react';
 import { ActionLink } from '../components/ui/ActionLink';
 import { WorkflowIntro } from '../components/workspace/WorkflowIntro';
 import {
+  type AnalysisDimensionId,
+  type AnalysisDimensionResult,
+  type ApiFailure,
+  type DeliveryTipResult,
+  type SentenceFeedbackResult,
+  type SpeechAnalysisResult,
+  type StrengthResult,
+  type PriorityImprovementResult,
+} from '../lib/aiApi';
+import { loadAnalysis } from '../lib/aiClient';
+import {
   SAMPLE_ANALYSIS_LABEL,
   SAMPLE_ANALYSIS_NOTE,
   sampleAnalysis,
-  type AnalysisDimensionId,
 } from '../lib/analysisSample';
 import {
-  buildSampleReport,
+  buildReport,
   getWebhookConfig,
   sendSampleReport,
 } from '../lib/reportWebhook';
@@ -35,21 +46,44 @@ interface AnalysisPageProps {
   draft: SpeechDraft;
 }
 
-const PREPARATION_DELAY_MS = 700;
+interface AnalysisView {
+  dimensions: AnalysisDimensionResult[];
+  priority: PriorityImprovementResult;
+  strengths: StrengthResult[];
+  sentenceFeedback: SentenceFeedbackResult[];
+  deliveryTips: DeliveryTipResult[];
+}
+
+type RequestState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'ready'; analysis: SpeechAnalysisResult }
+  | { status: 'error'; failure: ApiFailure };
+
+type DeliveryStatus = 'idle' | 'sending' | 'success' | 'error';
+
 const SCORE_MAX = 10;
 const SCORE_SEGMENTS = Array.from({ length: SCORE_MAX }, (_, index) => index);
 
-type DeliveryStatus = 'idle' | 'sending' | 'success' | 'error';
+const sampleView: AnalysisView = {
+  dimensions: [...sampleAnalysis.dimensions],
+  priority: sampleAnalysis.priority,
+  strengths: [...sampleAnalysis.strengths],
+  sentenceFeedback: [...sampleAnalysis.sentenceFeedback],
+  deliveryTips: [...sampleAnalysis.deliveryTips],
+};
 
 function formatIndex(index: number) {
   return String(index + 1).padStart(2, '0');
 }
 
-function getDimensionName(dimensionId: AnalysisDimensionId) {
+function getDimensionName(
+  dimensions: readonly AnalysisDimensionResult[],
+  dimensionId: AnalysisDimensionId,
+) {
   return (
-    sampleAnalysis.dimensions.find(
-      (dimension) => dimension.id === dimensionId,
-    )?.name ?? 'Sample dimension'
+    dimensions.find((dimension) => dimension.id === dimensionId)?.name ??
+    'Dimension'
   );
 }
 
@@ -59,6 +93,7 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
   const dimensionsTitleId = `${id}-dimensions`;
   const priorityTitleId = `${id}-priority`;
   const strengthsTitleId = `${id}-strengths`;
+  const weaknessesTitleId = `${id}-weaknesses`;
   const feedbackTitleId = `${id}-feedback`;
   const tipsTitleId = `${id}-tips`;
   const nextTitleId = `${id}-next`;
@@ -70,44 +105,101 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
   const meetsMinimum = wordCount >= MIN_SPEECH_WORDS;
   const displayTitle = draft.title.trim() || 'Untitled speech';
   const wordLabel = wordCount === 1 ? 'word' : 'words';
-  const [isPreparing, setIsPreparing] = useState(meetsMinimum);
+
+  const [requestState, setRequestState] = useState<RequestState>({
+    status: 'idle',
+  });
+  const [reloadKey, setReloadKey] = useState(0);
+  const [showSampleFallback, setShowSampleFallback] = useState(false);
   const [sendState, setSendState] = useState<DeliveryStatus>('idle');
   const [sendMessage, setSendMessage] = useState('');
   const sendInFlight = useRef(false);
 
+  useEffect(() => {
+    if (!meetsMinimum) {
+      setRequestState({ status: 'idle' });
+      setShowSampleFallback(false);
+      return;
+    }
+
+    let active = true;
+    setRequestState({ status: 'loading' });
+    setShowSampleFallback(false);
+
+    loadAnalysis(draft, { force: reloadKey > 0 }).then((result) => {
+      if (!active) {
+        return;
+      }
+
+      setRequestState(
+        result.ok
+          ? { status: 'ready', analysis: result.value }
+          : { status: 'error', failure: result.failure },
+      );
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [draft, meetsMinimum, reloadKey]);
+
+  const readyAnalysis =
+    requestState.status === 'ready' ? requestState.analysis : null;
+  const failure =
+    requestState.status === 'error' ? requestState.failure : null;
+  const isLive = readyAnalysis !== null;
+  const isFallback =
+    failure !== null && showSampleFallback && failure.fallbackAllowed;
+
+  const view: AnalysisView | null = readyAnalysis
+    ? {
+        dimensions: readyAnalysis.dimensions,
+        priority: readyAnalysis.priorityImprovement,
+        strengths: readyAnalysis.strengths,
+        sentenceFeedback: readyAnalysis.sentenceFeedback,
+        deliveryTips: readyAnalysis.deliveryTips,
+      }
+    : isFallback
+      ? sampleView
+      : null;
+
+  const focusAreas = view
+    ? view.dimensions.filter((dimension) => dimension.status !== 'Strong')
+    : [];
+
+  const emailReport = view
+    ? buildReport(
+        draft,
+        { dimensions: view.dimensions, priority: view.priority },
+        !isLive,
+      )
+    : null;
+
   const webhookConfig = getWebhookConfig();
-  const sampleReport = buildSampleReport(draft);
   const isSending = sendState === 'sending';
   const reportDescribedBy =
     webhookConfig.state === 'ready'
       ? reportDescriptionId
       : `${reportDescriptionId} ${reportConfigId}`;
 
-  useEffect(() => {
-    if (!meetsMinimum) {
-      setIsPreparing(false);
-      return;
-    }
-
-    setIsPreparing(true);
-    const timer = window.setTimeout(() => {
-      setIsPreparing(false);
-    }, PREPARATION_DELAY_MS);
-
-    return () => window.clearTimeout(timer);
-  }, [meetsMinimum]);
+  function retryAnalysis() {
+    setShowSampleFallback(false);
+    setSendState('idle');
+    setSendMessage('');
+    setReloadKey((key) => key + 1);
+  }
 
   async function handleSendReport() {
     if (sendInFlight.current) {
       return;
     }
 
-    const currentReport = buildSampleReport(draft);
+    const currentReport = emailReport;
 
     if (!currentReport) {
       setSendState('error');
       setSendMessage(
-        'The sample report isn’t available for this draft. Return to the workspace, check the draft, and try again.',
+        'A report isn’t ready for this draft yet. Wait for the analysis to finish, then try again.',
       );
       return;
     }
@@ -123,7 +215,9 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
     sendInFlight.current = true;
     setSendState('sending');
     setSendMessage(
-      'Sending the demonstration report to the configured webhook…',
+      isLive
+        ? 'Sending your AI report to the configured webhook…'
+        : 'Sending the demonstration report to the configured webhook…',
     );
 
     try {
@@ -132,7 +226,9 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
       if (result.ok) {
         setSendState('success');
         setSendMessage(
-          `The webhook accepted the demonstration report (HTTP ${result.status}). Your Make.com scenario sends the email, so inbox delivery isn’t confirmed by this page.`,
+          `The webhook accepted the ${
+            isLive ? 'AI report' : 'demonstration report'
+          } (HTTP ${result.status}). Your Make.com scenario sends the email, so inbox delivery isn’t confirmed by this page.`,
         );
         return;
       }
@@ -151,14 +247,24 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
 
   const statusMessage = !meetsMinimum
     ? `No valid draft is loaded. The workspace needs at least ${MIN_SPEECH_WORDS} words.`
-    : isPreparing
-      ? 'Preparing the sample analysis.'
-      : 'Sample analysis dashboard ready. All results are demonstration data.';
+    : requestState.status === 'loading'
+      ? 'Analysing your speech with the AI model.'
+      : requestState.status === 'error'
+        ? showSampleFallback
+          ? 'AI analysis is unavailable. Showing fixed sample analysis as a fallback.'
+          : `The live analysis could not be completed. ${requestState.failure.message}`
+        : 'Live AI analysis ready.';
+
+  const introDescription = isLive
+    ? 'This review was generated by the configured AI model from the draft you wrote. Treat the scores as a starting point, not a verdict.'
+    : isFallback
+      ? 'The AI analysis could not be completed, so this page is showing fixed demonstration data. These scores and notes do not describe your speech.'
+      : 'Your draft is sent to the server for analysis by the configured AI model. The live review appears here when the model responds.';
 
   return (
     <section className={styles.page} aria-labelledby={pageTitleId}>
       <div className="container">
-        <p className="visually-hidden" role="status">
+        <p className="visually-hidden" role="status" aria-atomic="true">
           {statusMessage}
         </p>
 
@@ -172,7 +278,7 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
             </>
           }
           titleId={pageTitleId}
-          description="A fixed demonstration review, arranged the way the finished analysis will be. Your draft is carried through for context — these scores and notes are sample content, not an assessment of your speech."
+          description={introDescription}
           currentStep="analyse"
         />
 
@@ -188,9 +294,8 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
               </h2>
               <p className={styles.emptyText}>
                 Write or paste at least {MIN_SPEECH_WORDS} words in the
-                workspace, then return to this step. The review is fixed
-                demonstration content, and this page opens only when your
-                draft meets the minimum.
+                workspace, then return to this step. The live AI review runs
+                as soon as the page opens with a valid draft.
               </p>
               <div className={styles.emptyActions}>
                 <ActionLink to="#/workspace" size="lg">
@@ -206,16 +311,17 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
               </p>
             </div>
           </div>
-        ) : isPreparing ? (
+        ) : requestState.status === 'loading' ||
+          requestState.status === 'idle' ? (
           <div className={styles.loadingPanel} aria-busy="true">
             <div className={styles.loadingTop}>
-              <span className={styles.sampleBadge}>
-                <FlaskConical
+              <span className={styles.liveBadge}>
+                <Sparkles
                   size={14}
                   strokeWidth={1.9}
                   aria-hidden="true"
                 />
-                {SAMPLE_ANALYSIS_LABEL}
+                Live AI analysis
               </span>
               <span className={styles.loadingStatus}>
                 <LoaderCircle
@@ -224,18 +330,17 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
                   strokeWidth={2}
                   aria-hidden="true"
                 />
-                Preparing sample
+                Analysing
               </span>
             </div>
 
             <div className={styles.loadingCopy}>
-              <p className={styles.stateLabel}>Step 2 · demonstration</p>
-              <h2 className={styles.loadingTitle}>
-                Laying out the sample review.
-              </h2>
+              <p className={styles.stateLabel}>Step 2 · live AI</p>
+              <h2 className={styles.loadingTitle}>Reading your draft.</h2>
               <p className={styles.loadingText}>
-                No AI call is running and your draft is not being assessed.
-                The fixed demonstration data will appear in a moment.
+                Your draft is being analysed on the server by the configured
+                AI model. This usually takes a few seconds; the full review
+                appears here when it arrives.
               </p>
             </div>
 
@@ -249,8 +354,107 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
               ))}
             </div>
           </div>
-        ) : (
+        ) : failure && !showSampleFallback ? (
+          <div className={styles.emptyPanel}>
+            <div className={styles.emptyContent}>
+              <span
+                className={`${styles.emptyIcon} ${styles.errorIcon}`}
+                aria-hidden="true"
+              >
+                <AlertCircle size={24} strokeWidth={1.8} />
+              </span>
+              <div className={styles.emptyBody}>
+                <p className={styles.stateLabel}>Live AI analysis</p>
+                <h2 className={styles.emptyTitle}>
+                  {failure.retryable
+                    ? 'The analysis didn’t come back.'
+                    : 'Live analysis isn’t available right now.'}
+                </h2>
+                <p className={styles.emptyText} role="alert">
+                  {failure.message}
+                </p>
+                <div className={styles.emptyActions}>
+                  {failure.retryable ? (
+                    <button
+                      type="button"
+                      className={styles.errorRetry}
+                      onClick={retryAnalysis}
+                    >
+                      <RotateCcw
+                        size={15}
+                        strokeWidth={2.2}
+                        aria-hidden="true"
+                      />
+                      Retry analysis
+                    </button>
+                  ) : null}
+                  {failure.fallbackAllowed ? (
+                    <button
+                      type="button"
+                      className={styles.fallbackButton}
+                      onClick={() => setShowSampleFallback(true)}
+                    >
+                      <FlaskConical
+                        size={15}
+                        strokeWidth={1.9}
+                        aria-hidden="true"
+                      />
+                      Show sample fallback
+                    </button>
+                  ) : null}
+                  <ActionLink
+                    to="#/workspace"
+                    variant="secondary"
+                    size="lg"
+                  >
+                    Back to workspace
+                  </ActionLink>
+                </div>
+                <p className={styles.emptyCount}>
+                  {failure.fallbackAllowed
+                    ? 'The sample fallback is fixed demonstration data. It is never presented as a real result.'
+                    : 'No sample scores are shown for this error.'}
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : view ? (
           <div className={styles.dashboard}>
+            {isFallback && failure ? (
+              <div className={styles.fallbackBanner} role="status">
+                <div className={styles.fallbackLead}>
+                  <span className={styles.sampleBadge}>
+                    <FlaskConical
+                      size={14}
+                      strokeWidth={1.9}
+                      aria-hidden="true"
+                    />
+                    {SAMPLE_ANALYSIS_LABEL}
+                  </span>
+                  <p className={styles.fallbackTitle}>
+                    AI unavailable — showing sample data
+                  </p>
+                  <p className={styles.fallbackText}>
+                    {failure.message} The scores, strengths, and suggestions
+                    below are fixed demonstration content, not results for
+                    your speech.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className={styles.errorRetry}
+                  onClick={retryAnalysis}
+                >
+                  <RotateCcw
+                    size={15}
+                    strokeWidth={2.2}
+                    aria-hidden="true"
+                  />
+                  Try AI again
+                </button>
+              </div>
+            ) : null}
+
             <section
               className={styles.reportPanel}
               aria-labelledby={reportTitleId}
@@ -261,20 +465,30 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
                 </span>
                 <div className={styles.reportCopy}>
                   <p className={styles.reportTag}>
-                    <FlaskConical
-                      size={13}
-                      strokeWidth={1.9}
-                      aria-hidden="true"
-                    />
-                    Demonstration report
+                    {isLive ? (
+                      <Sparkles
+                        size={13}
+                        strokeWidth={1.9}
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <FlaskConical
+                        size={13}
+                        strokeWidth={1.9}
+                        aria-hidden="true"
+                      />
+                    )}
+                    {isLive ? 'AI report' : 'Demonstration report'}
                   </p>
                   <h2 id={reportTitleId} className={styles.reportTitle}>
-                    Send this sample report to your email.
+                    {isLive
+                      ? 'Send this AI report to your email.'
+                      : 'Send this sample report to your email.'}
                   </h2>
                   <p id={reportDescriptionId} className={styles.reportText}>
-                    Includes the speech title, audience, goal, word count,
-                    the five sample scores, and the sample priority focus.
-                    Your speech text is never included.
+                    {isLive
+                      ? 'Includes the speech title, audience, goal, word count, the five AI scores, and the AI priority focus. Your speech text is never included.'
+                      : 'Includes the speech title, audience, goal, word count, the five sample scores, and the sample priority focus. Your speech text is never included.'}
                   </p>
                   <p className={styles.reportNote}>
                     The endpoint is read from{' '}
@@ -304,7 +518,7 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
                   disabled={
                     isSending ||
                     webhookConfig.state !== 'ready' ||
-                    !sampleReport
+                    !emailReport
                   }
                   aria-busy={isSending}
                   aria-describedby={reportDescribedBy}
@@ -360,7 +574,7 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
                       </p>
                       {sendState === 'error' &&
                       webhookConfig.state === 'ready' &&
-                      sampleReport ? (
+                      emailReport ? (
                         <button
                           type="button"
                           className={styles.retryButton}
@@ -382,16 +596,29 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
 
             <header className={styles.overview}>
               <div className={styles.overviewTop}>
-                <span className={styles.sampleBadge}>
-                  <FlaskConical
-                    size={14}
-                    strokeWidth={1.9}
-                    aria-hidden="true"
-                  />
-                  {SAMPLE_ANALYSIS_LABEL}
-                </span>
+                {isLive ? (
+                  <span className={styles.liveBadge}>
+                    <Sparkles
+                      size={14}
+                      strokeWidth={1.9}
+                      aria-hidden="true"
+                    />
+                    Live AI analysis
+                  </span>
+                ) : (
+                  <span className={styles.sampleBadge}>
+                    <FlaskConical
+                      size={14}
+                      strokeWidth={1.9}
+                      aria-hidden="true"
+                    />
+                    {SAMPLE_ANALYSIS_LABEL}
+                  </span>
+                )}
                 <span className={styles.fixtureFlag}>
-                  Fixed fixture · no live AI
+                  {isLive
+                    ? 'Generated by AI from this draft'
+                    : 'Sample fallback · AI unavailable'}
                 </span>
               </div>
 
@@ -436,7 +663,11 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
                 </div>
               </div>
 
-              <p className={styles.overviewNote}>{SAMPLE_ANALYSIS_NOTE}</p>
+              <p className={styles.overviewNote}>
+                {isLive
+                  ? 'Scores, explanations, and suggestions were generated by the AI model from the draft above. AI feedback can miss context or be wrong; use your judgement.'
+                  : SAMPLE_ANALYSIS_NOTE}
+              </p>
             </header>
 
             <div className={styles.reviewLayout}>
@@ -448,16 +679,20 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
                   <div>
                     <p className={styles.eyebrow}>Five dimensions</p>
                     <h2 id={dimensionsTitleId} className={styles.sectionTitle}>
-                      How the sample performs.
+                      {isLive
+                        ? 'How your speech scores.'
+                        : 'How the sample performs.'}
                     </h2>
                   </div>
                   <p className={styles.panelNote}>
-                    Fixed 0–{SCORE_MAX} sample scores
+                    {isLive
+                      ? `Live AI scores · 0–${SCORE_MAX}`
+                      : `Fixed 0–${SCORE_MAX} sample scores`}
                   </p>
                 </div>
 
                 <ol className={styles.dimensionList}>
-                  {sampleAnalysis.dimensions.map((dimension, index) => (
+                  {view.dimensions.map((dimension, index) => (
                     <li key={dimension.id} className={styles.dimension}>
                       <span
                         className={styles.dimensionIndex}
@@ -522,9 +757,9 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
                 </ol>
 
                 <p className={styles.panelFootnote}>
-                  Scores, statuses, and notes come from the fixed
-                  demonstration fixture. None of this was generated from your
-                  draft.
+                  {isLive
+                    ? 'Scores, statuses, and notes were generated by the AI model from your draft. Treat them as a starting point, not a verdict.'
+                    : 'Scores, statuses, and notes come from the fixed demonstration fixture. None of this was generated from your draft.'}
                 </p>
               </section>
 
@@ -536,22 +771,27 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
                   <p className={styles.priorityEyebrow}>
                     <Target size={14} strokeWidth={1.9} aria-hidden="true" />
                     Focus area ·{' '}
-                    {getDimensionName(sampleAnalysis.priority.dimensionId)}
+                    {getDimensionName(
+                      view.dimensions,
+                      view.priority.dimensionId,
+                    )}
                   </p>
-                  <span className={styles.priorityTag}>Sample</span>
+                  <span className={styles.priorityTag}>
+                    {isLive ? 'AI focus' : 'Sample'}
+                  </span>
                 </div>
 
                 <h2 id={priorityTitleId} className={styles.priorityTitle}>
                   Improve this first
                 </h2>
                 <p className={styles.priorityHeadline}>
-                  {sampleAnalysis.priority.headline}
+                  {view.priority.headline}
                 </p>
 
                 <div className={styles.priorityBlock}>
                   <p className={styles.priorityBlockLabel}>Why it matters</p>
                   <p className={styles.priorityText}>
-                    {sampleAnalysis.priority.whyItMatters}
+                    {view.priority.whyItMatters}
                   </p>
                 </div>
 
@@ -560,12 +800,14 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
                 >
                   <p className={styles.priorityBlockLabel}>Try this next</p>
                   <p className={styles.priorityText}>
-                    {sampleAnalysis.priority.nextAction}
+                    {view.priority.nextAction}
                   </p>
                 </div>
 
                 <p className={styles.priorityNote}>
-                  Illustrative priority from the demonstration fixture.
+                  {isLive
+                    ? 'Priority selected by the AI model from this draft.'
+                    : 'Illustrative priority from the demonstration fixture.'}
                 </p>
               </aside>
             </div>
@@ -578,17 +820,20 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
                 <div>
                   <p className={styles.eyebrow}>Strengths</p>
                   <h2 id={strengthsTitleId} className={styles.sectionTitle}>
-                    What the sample does well.
+                    {isLive
+                      ? 'What your speech does well.'
+                      : 'What the sample does well.'}
                   </h2>
                 </div>
                 <p className={styles.sectionLedger}>
-                  Three examples from the fixed demonstration fixture. These
-                  are not findings discovered in your speech.
+                  {isLive
+                    ? 'Strengths identified by the AI model in the draft above.'
+                    : 'Three examples from the fixed demonstration fixture. These are not findings discovered in your speech.'}
                 </p>
               </div>
 
               <ul className={styles.strengthGrid}>
-                {sampleAnalysis.strengths.map((strength, index) => (
+                {view.strengths.map((strength, index) => (
                   <li key={strength.id} className={styles.strengthItem}>
                     <div className={styles.itemTop}>
                       <span className={styles.itemNumber} aria-hidden="true">
@@ -598,10 +843,15 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
                         <span className="visually-hidden">
                           Related dimension:{' '}
                         </span>
-                        {getDimensionName(strength.dimensionId)}
+                        {getDimensionName(
+                          view.dimensions,
+                          strength.dimensionId,
+                        )}
                       </span>
                     </div>
-                    <p className={styles.exampleLabel}>Example strength</p>
+                    <p className={styles.exampleLabel}>
+                      {isLive ? 'AI strength' : 'Example strength'}
+                    </p>
                     <h3 className={styles.strengthTitle}>{strength.title}</h3>
                     <p className={styles.strengthText}>
                       {strength.explanation}
@@ -610,6 +860,66 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
                 ))}
               </ul>
             </section>
+
+            {isLive ? (
+              <section
+                className={styles.strengths}
+                aria-labelledby={weaknessesTitleId}
+              >
+                <div className={styles.sectionHeader}>
+                  <div>
+                    <p className={styles.eyebrow}>
+                      Weaknesses · from the AI review
+                    </p>
+                    <h2
+                      id={weaknessesTitleId}
+                      className={styles.sectionTitle}
+                    >
+                      Where the draft needs work.
+                    </h2>
+                  </div>
+                  <p className={styles.sectionLedger}>
+                    Dimensions the AI model scored below Strong. Pair these
+                    with the priority focus above.
+                  </p>
+                </div>
+
+                {focusAreas.length > 0 ? (
+                  <ul className={styles.strengthGrid}>
+                    {focusAreas.map((dimension, index) => (
+                      <li key={dimension.id} className={styles.strengthItem}>
+                        <div className={styles.itemTop}>
+                          <span
+                            className={styles.itemNumber}
+                            aria-hidden="true"
+                          >
+                            {formatIndex(index)}
+                          </span>
+                          <span className={styles.dimensionPill}>
+                            {dimension.score} / {SCORE_MAX} ·{' '}
+                            {dimension.status}
+                          </span>
+                        </div>
+                        <p className={styles.exampleLabel}>
+                          Where to improve
+                        </p>
+                        <h3 className={styles.strengthTitle}>
+                          {dimension.name}
+                        </h3>
+                        <p className={styles.strengthText}>
+                          {dimension.explanation}
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className={styles.panelFootnote}>
+                    The AI model rated every dimension Strong. Re-run the
+                    analysis after your next edit to confirm.
+                  </p>
+                )}
+              </section>
+            ) : null}
 
             <section
               className={styles.feedbackSection}
@@ -623,13 +933,14 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
                   </h2>
                 </div>
                 <p className={styles.sectionLedger}>
-                  Example sentences written for the fixture. They are not
-                  quotations from your draft.
+                  {isLive
+                    ? 'Lines quoted from your draft, paired with a suggested revision.'
+                    : 'Example sentences written for the fixture. They are not quotations from your draft.'}
                 </p>
               </div>
 
               <ol className={styles.feedbackList}>
-                {sampleAnalysis.sentenceFeedback.map((item, index) => (
+                {view.sentenceFeedback.map((item, index) => (
                   <li key={item.id} className={styles.feedbackItem}>
                     <div className={styles.feedbackExample}>
                       <div className={styles.feedbackMeta}>
@@ -643,10 +954,15 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
                           <span className="visually-hidden">
                             Related dimension:{' '}
                           </span>
-                          {getDimensionName(item.dimensionId)}
+                          {getDimensionName(
+                            view.dimensions,
+                            item.dimensionId,
+                          )}
                         </span>
                       </div>
-                      <p className={styles.exampleLabel}>Example sentence</p>
+                      <p className={styles.exampleLabel}>
+                        {isLive ? 'Your sentence' : 'Example sentence'}
+                      </p>
                       <p className={styles.feedbackSentence}>
                         {item.exampleSentence}
                       </p>
@@ -654,7 +970,9 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
 
                     <div className={styles.feedbackDetail}>
                       <div>
-                        <p className={styles.detailLabel}>What to notice</p>
+                        <p className={styles.detailLabel}>
+                          {isLive ? 'What stands out' : 'What to notice'}
+                        </p>
                         <p className={styles.issueText}>{item.issue}</p>
                       </div>
                       <div className={styles.revision}>
@@ -681,18 +999,20 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
                     Delivery tips · general guidance
                   </p>
                   <h2 id={tipsTitleId} className={styles.sectionTitle}>
-                    Three things to rehearse.
+                    {isLive
+                      ? 'A few things to rehearse.'
+                      : 'Three things to rehearse.'}
                   </h2>
                 </div>
                 <p className={styles.sectionLedger}>
-                  Practical suggestions only. Nothing here comes from
-                  listening to you or measuring your voice, pace, tone, or
-                  body language.
+                  {isLive
+                    ? 'General delivery suggestions from the AI model. Nothing here comes from listening to you or measuring your voice, pace, tone, or body language.'
+                    : 'Practical suggestions only. Nothing here comes from listening to you or measuring your voice, pace, tone, or body language.'}
                 </p>
               </div>
 
               <ol className={styles.tipGrid}>
-                {sampleAnalysis.deliveryTips.map((tip, index) => (
+                {view.deliveryTips.map((tip, index) => (
                   <li key={tip.id} className={styles.tipItem}>
                     <span className={styles.tipNumber} aria-hidden="true">
                       {formatIndex(index)}
@@ -714,9 +1034,9 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
                   Take the feedback into revision.
                 </h2>
                 <p className={styles.nextText}>
-                  Your draft stays untouched in the workspace. The scores and
-                  notes on this page remain sample content; the revision step
-                  is where the next pass belongs.
+                  {isLive
+                    ? 'Your draft stays untouched in the workspace. Apply one suggestion from this review, then re-run the analysis to see what changes.'
+                    : 'Your draft stays untouched in the workspace. The scores and notes on this page remain sample content; the revision step is where the next pass belongs.'}
                 </p>
               </div>
               <div className={styles.nextActions}>
@@ -733,7 +1053,7 @@ export function AnalysisPage({ draft }: AnalysisPageProps) {
               </div>
             </section>
           </div>
-        )}
+        ) : null}
       </div>
     </section>
   );

@@ -1,4 +1,3 @@
-import { sampleAnalysis } from './analysisSample';
 import {
   countWords,
   getAudienceLabel,
@@ -18,7 +17,7 @@ export interface ReportPriority {
   nextAction: string;
 }
 
-export interface SampleReport {
+export interface EmailReport {
   speechTitle: string;
   audience: string;
   goal: string;
@@ -26,7 +25,16 @@ export interface SampleReport {
   scores: ReportScore[];
   scoreSummary: string;
   priorityImprovement: ReportPriority | null;
-  sampleMode: true;
+  sampleMode: boolean;
+}
+
+export interface ReportAnalysis {
+  dimensions: readonly { id: string; name: string; score: number }[];
+  priority: {
+    dimensionId: string;
+    headline: string;
+    nextAction: string;
+  };
 }
 
 export type WebhookConfig =
@@ -73,14 +81,18 @@ export function getWebhookConfig(): WebhookConfig {
   }
 }
 
-export function buildSampleReport(draft: SpeechDraft): SampleReport | null {
+export function buildReport(
+  draft: SpeechDraft,
+  analysis: ReportAnalysis,
+  sampleMode: boolean,
+): EmailReport | null {
   const wordCount = countWords(draft.speech);
 
   if (wordCount < MIN_SPEECH_WORDS) {
     return null;
   }
 
-  const scores = sampleAnalysis.dimensions
+  const scores = analysis.dimensions
     .filter(
       (dimension) =>
         Number.isFinite(dimension.score) &&
@@ -96,8 +108,8 @@ export function buildSampleReport(draft: SpeechDraft): SampleReport | null {
     return null;
   }
 
-  const priorityDimension = sampleAnalysis.dimensions.find(
-    (dimension) => dimension.id === sampleAnalysis.priority.dimensionId,
+  const priorityDimension = analysis.dimensions.find(
+    (dimension) => dimension.id === analysis.priority.dimensionId,
   );
 
   return {
@@ -112,17 +124,17 @@ export function buildSampleReport(draft: SpeechDraft): SampleReport | null {
     priorityImprovement: priorityDimension
       ? {
           dimension: priorityDimension.name,
-          headline: sampleAnalysis.priority.headline,
-          nextAction: sampleAnalysis.priority.nextAction,
+          headline: analysis.priority.headline,
+          nextAction: analysis.priority.nextAction,
         }
       : null,
-    sampleMode: true,
+    sampleMode,
   };
 }
 
 export async function sendSampleReport(
   endpoint: string,
-  report: SampleReport,
+  report: EmailReport,
 ): Promise<ReportSendResult> {
   const controller = new AbortController();
   const timeout = window.setTimeout(
